@@ -15,7 +15,7 @@ app = Flask(__name__)
 # Initialize global variables
 subjects = ["Unknown", "Stanley", "Justin", "Yasir", "Jo", "Nisarg"]
 #cascadeClassifierPath = "C:/opencv/build/etc/lbpcascades/lbpcascade_frontalface_improved.xml"
-cascadeClassifierPath = "C:/dev/opencv/build/etc/haarcascades/haarcascade_frontalface_default.xml"
+cascadeClassifierPath = "C:/opencv/build/etc/haarcascades/haarcascade_frontalface_default.xml"
 
 face_cascade = cv2.CascadeClassifier(cascadeClassifierPath)
 face_recognizer = cv2.face.LBPHFaceRecognizer_create()
@@ -48,7 +48,7 @@ def train_model():
     return r
 
 
-def generate_dataset(capture, num_samples, path, label):
+def generate_dataset(capture, path, label, num_samples = 30):
     sample_idx = 0
     samples_captured = 0
 
@@ -115,7 +115,10 @@ def getFaces(path):
     return face_list, label_list
 
 
-def predict_user(capture):
+def predict_user(capture, num_samples = 300):
+    samples_captured = 0
+    results = {label : 0 for label in subjects}
+
     while True:
         # Obtain next video frame
         retval, img = capture.read()
@@ -127,26 +130,29 @@ def predict_user(capture):
         for (x, y, w, h) in detected_faces:
             cv2.rectangle(img, (x, y), (x + w, y + h), (225, 0, 0), 2)
             label, confidence = face_recognizer.predict(img_gray[y:y + h, x:x + w])
-            #print("label " + str(label))
-            #print("confidence " + str(confidence))
 
-            if confidence > 45:
-                #print('confidence over 40')
-                label_text = "Unknown"
-            else:
-                label_text = subjects[label]
-                print(str(label))
+            if confidence > 60:
+                label = 0
+
+            label_text = subjects[label]
+            results[subjects[label]] += 1
+            samples_captured += 1
+
             cv2.putText(img, label_text, (x, y + h), cv2.FONT_HERSHEY_PLAIN, 1.5, (225, 0, 0))
-        
+
         cv2.imshow('frame', img)
         if cv2.waitKey(10) & 0xFF == ord('q'):
+            break
+        elif samples_captured >= num_samples:
             break
 
     capture.release()
     cv2.destroyAllWindows()
 
+    return [k for k,v in results.items() if v == max(results.values())][0]
+
 if __name__ == '__main__':
-    device_id = 1
+    device_id = 0
     port = 3000
 
     print("Starting VideoCapture object on Device %d" % device_id)
@@ -157,7 +163,7 @@ if __name__ == '__main__':
     new_face_input = raw_input("Would you like to add a new face to the dataset (y/n): ")
     if new_face_input.lower() == "y":
         user_id = raw_input("Enter User ID: ")
-        generate_dataset(cap, 100, "dataSet", user_id)
+        generate_dataset(cap, "dataSet", user_id, 50)
 
     train_input = raw_input("Would you like to retrain the model (y/n): ")
     if train_input.lower() == "y":
@@ -169,6 +175,6 @@ if __name__ == '__main__':
         face_recognizer.write("model/model.yml")
 
     face_recognizer.read("model/model.yml")
-    predict_user(cap)
+    print(predict_user(cap))
     #print("Starting app on port %d" % port)
     #app.run(debug=False, port=port, host='0.0.0.0')
