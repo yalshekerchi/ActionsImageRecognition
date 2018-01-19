@@ -8,17 +8,24 @@ import shelve
 import cv2
 import numpy as np
 
-
 # Initialize Flask app instance
 app = Flask(__name__)
 
+# config strings
+shelfPath = 'model/user_shelf.db'
+cascadeClassifierPath = 'libs/haarcascade_frontalface_default.xml'
+
+# global objects
+users = {} # user_shelf
+face_cascade = cv2.CascadeClassifier(cascadeClassifierPath)
+face_recognizer = cv2.face.LBPHFaceRecognizer_create()
+
+####
 # Initialize global variables
 subjects = ["Unknown", "Stanley", "Justin", "Yasir", "Jo", "Nisarg"]
 #cascadeClassifierPath = "C:/opencv/build/etc/lbpcascades/lbpcascade_frontalface_improved.xml"
-cascadeClassifierPath = "C:/dev/opencv/build/etc/haarcascades/haarcascade_frontalface_default.xml"
-
-face_cascade = cv2.CascadeClassifier(cascadeClassifierPath)
-face_recognizer = cv2.face.LBPHFaceRecognizer_create()
+#cascadeClassifierPath = "C:/dev/opencv/build/etc/haarcascades/haarcascade_frontalface_default.xml"
+####
 
 @app.route('/train', methods=['POST'])
 def train_model():
@@ -28,9 +35,6 @@ def train_model():
     # Dump JSON Request to stdout
     print("Request:")
     print(json.dumps(req, indent=4))
-
-    # Start Capture
-    #start_capture_stuff()
 
     # Create Response Dictionary
     voice = "Hello World Speech"
@@ -47,12 +51,29 @@ def train_model():
     # Return response
     return r
 
+def get_max_id(dict):
+    return max([int(x) for x in dict.vals()])
 
-def generate_dataset(capture, path, label, num_samples = 30):
+def update_db(value):
+    # check existing entry
+    for key, val in users.iteritems():
+        if val == value:
+            return key
+    # insert new entry
+    user_id = str(get_max_id(users) + 1)
+    users[user_id] = value
+    return user_id
+
+def generate_dataset(capture, path, name, num_samples = 30):
     sample_idx = 0
     samples_captured = 0
 
-    dir_path = path + "/user_" + label
+    face_list = []
+    label_list = []
+
+    user_id = update_db(name)
+
+    dir_path = path + "/user_" + user_id
     if not os.path.exists(dir_path):
         os.makedirs(dir_path)
 
@@ -72,9 +93,14 @@ def generate_dataset(capture, path, label, num_samples = 30):
                 sample_idx += 1
 
             # Save captured face image in the dataset folder
-            resized = cv2.resize(img_gray[y:y + h, x:x + w], (200, 200), interpolation=cv2.INTER_AREA)
-            cv2.imwrite(dir_path + "/sample_" + str(sample_idx) + ".jpg", resized)
+            resized_img = cv2.resize(img_gray[y:y + h, x:x + w], (200, 200), interpolation=cv2.INTER_AREA)
+            face_list.append(resized_img)
+            label_list.append(int(user_id))
+
+            cv2.imwrite(dir_path + "/sample_" + str(sample_idx) + ".jpg", resized_img)
+
             samples_captured += 1
+            sample_idx += 1
 
             # Display captured frame
             cv2.imshow('frame', img)
@@ -84,6 +110,8 @@ def generate_dataset(capture, path, label, num_samples = 30):
             break
         elif samples_captured >= num_samples:
             break
+
+    return face_list, label_list
 
 
 def get_faces(path):
@@ -117,7 +145,7 @@ def get_faces(path):
 
 def predict_user(capture, num_samples = 50):
     samples_captured = 0
-    results = [0]*len(subjects)
+    results = [0]*len(users)
 
     while True:
         # Obtain next video frame
@@ -134,11 +162,11 @@ def predict_user(capture, num_samples = 50):
             if confidence > 60:
                 label = 0
 
-            label_text = subjects[label]
+            name = users[str(label)]
             results[label] += 1
             samples_captured += 1
 
-            cv2.putText(img, label_text, (x, y + h), cv2.FONT_HERSHEY_PLAIN, 1.5, (225, 0, 0))
+            cv2.putText(img, name, (x, y + h), cv2.FONT_HERSHEY_PLAIN, 1.5, (225, 0, 0))
 
         cv2.imshow('frame', img)
         if cv2.waitKey(10) & 0xFF == ord('q'):
@@ -149,32 +177,36 @@ def predict_user(capture, num_samples = 50):
     capture.release()
     cv2.destroyAllWindows()
 
-    return subjects[results.index(max(results))]
+    return users[str(results.index(max(results)))]
 
 if __name__ == '__main__':
     device_id = 0
     port = 3000
 
-    print("Starting VideoCapture object on Device %d" % device_id)
-    cap = cv2.VideoCapture(0)
-    if cap.isOpened() is False:
-        print("Unable to initialize VideoCapture object")
+    try:
+        users = shelve.open(shelfPath)
+        face_recognizer.read("model/model.yml")
+        
+        print("Starting VideoCapture object on Device %d" % device_id)
+        cap = cv2.VideoCapture(0)
+        if cap.isOpened() is False:
+            print("Unable to initialize VideoCapture object")
 
-    new_face_input = raw_input("Would you like to add a new face to the dataset (y/n): ")
-    if new_face_input.lower() == "y":
-        user_id = raw_input("Enter User ID: ")
-        generate_dataset(cap, "dataSet", user_id, 50)
+        new_face_input = raw_input("Would you like to add a new face to the dataset (y/n): ")
+        if new_face_input.lower() == "y":
+            user_name = raw_input("Enter user name: ")
+            faces, labels = generate_dataset(cap, "dataSet", user_name, 50)
+            face_recognizer.update(faces, labels)
 
-    train_input = raw_input("Would you like to retrain the model (y/n): ")
-    if train_input.lower() == "y":
-        faces, labels = getFaces("dataSet")
-        face_recognizer.train(faces, np.array(labels))
+        train_input = raw_input("Would you like to retrain the model (y/n): ")
+        if train_input.lower() == "y":
+            faces, labels = get_faces("dataSet")
+            face_recognizer.train(faces, np.array(labels))
 
-        if not os.path.exists("model"):
-            os.makedirs("model")
-        face_recognizer.write("model/model.yml")
+            if not os.path.exists("model"):
+                os.makedirs("model")
+            face_recognizer.write("model/model.yml")
 
-    face_recognizer.read("model/model.yml")
-    print(predict_user(cap))
-    #print("Starting app on port %d" % port)
-    #app.run(debug=False, port=port, host='0.0.0.0')
+        print(predict_user(cap))
+    finally:
+        users.close()
