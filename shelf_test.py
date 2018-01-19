@@ -16,12 +16,13 @@ def test_shelf():
     print shelf
 
 def clean_shelf():
-    for key, val in shelf.iteritems:
-        if "test" in key:
+    for key, val in shelf.iteritems():
+        if "kojima" in val:
             del shelf[key]
 
 if __name__ == '__main__':
-    shelf = shelve.open('user_shelf.db')
+    shelf = shelve.open('model/user_shelf.db')
     #init_shelf()
     test_shelf()
+    #clean_shelf()
     
