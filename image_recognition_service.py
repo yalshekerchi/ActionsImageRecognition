@@ -4,7 +4,7 @@ from flask import Flask, request, make_response
 import json
 import os
 import sys
-
+import shelve
 import cv2
 import numpy as np
 
@@ -15,7 +15,7 @@ app = Flask(__name__)
 # Initialize global variables
 subjects = ["Unknown", "Stanley", "Justin", "Yasir", "Jo", "Nisarg"]
 #cascadeClassifierPath = "C:/opencv/build/etc/lbpcascades/lbpcascade_frontalface_improved.xml"
-cascadeClassifierPath = "C:/opencv/build/etc/haarcascades/haarcascade_frontalface_default.xml"
+cascadeClassifierPath = "C:/dev/opencv/build/etc/haarcascades/haarcascade_frontalface_default.xml"
 
 face_cascade = cv2.CascadeClassifier(cascadeClassifierPath)
 face_recognizer = cv2.face.LBPHFaceRecognizer_create()
@@ -86,7 +86,7 @@ def generate_dataset(capture, path, label, num_samples = 30):
             break
 
 
-def getFaces(path):
+def get_faces(path):
     # Create lists to hold all subject faces and labels
     face_list = []
     label_list = []
@@ -115,9 +115,9 @@ def getFaces(path):
     return face_list, label_list
 
 
-def predict_user(capture, num_samples = 300):
+def predict_user(capture, num_samples = 50):
     samples_captured = 0
-    results = {label : 0 for label in subjects}
+    results = [0]*len(subjects)
 
     while True:
         # Obtain next video frame
@@ -135,7 +135,7 @@ def predict_user(capture, num_samples = 300):
                 label = 0
 
             label_text = subjects[label]
-            results[subjects[label]] += 1
+            results[label] += 1
             samples_captured += 1
 
             cv2.putText(img, label_text, (x, y + h), cv2.FONT_HERSHEY_PLAIN, 1.5, (225, 0, 0))
@@ -149,7 +149,7 @@ def predict_user(capture, num_samples = 300):
     capture.release()
     cv2.destroyAllWindows()
 
-    return [k for k,v in results.items() if v == max(results.values())][0]
+    return subjects[results.index(max(results))]
 
 if __name__ == '__main__':
     device_id = 0
