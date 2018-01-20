@@ -8,30 +8,36 @@ import shelve
 import cv2
 import numpy as np
 
-# Initialize Flask app instance
-app = Flask(__name__)
-
 # config strings
-modelDir = 'model'
-dataSetDir = 'dataSet'
-shelfPath = modelDir + '/user_shelf.db'
-modelPath = modelDir + '/model.yml'
-cascadeClassifierPath = 'libs/haarcascade_frontalface_default.xml'
+CAPTURE_DEVICE_ID = 0
+FLASK_SERVER_HOST = '0.0.0.0'
+FLASK_SERVER_PORT = 3000
+MODEL_DIR = 'model'
+DATASET_DIR = 'dataset'
+SHELF_PATH = MODEL_DIR + '/user_shelf.db'
+MODEL_PATH = MODEL_DIR + '/model.yml'
+CASCADE_CLASSIFIER_PATH = 'libs/haarcascade_frontalface_default.xml'
+MAX_CONFIDENCE = 60
+DEFAULT_NUM_SAMPLES_TRAIN = 30
+DEFAULT_NUM_SAMPLES_IDENTIFY = 50
 
 # global objects
-users = {} # user_shelf
-face_cascade = cv2.CascadeClassifier(cascadeClassifierPath)
+face_cascade = cv2.CascadeClassifier(CASCADE_CLASSIFIER_PATH)
 face_recognizer = cv2.face.LBPHFaceRecognizer_create()
 
-####
-# Initialize global variables
-subjects = ["Unknown", "Stanley", "Justin", "Yasir", "Jo", "Nisarg"]
-#cascadeClassifierPath = "C:/opencv/build/etc/lbpcascades/lbpcascade_frontalface_improved.xml"
-#cascadeClassifierPath = "C:/dev/opencv/build/etc/haarcascades/haarcascade_frontalface_default.xml"
-####
+# Initialize Flask flask_app instance
+flask_app = Flask(__name__)
 
-@app.route('/train', methods=['POST'])
-def train_model():
+# start video capture
+print("Starting VideoCapture object on Device %d" % CAPTURE_DEVICE_ID)
+cap = cv2.VideoCapture(CAPTURE_DEVICE_ID)
+if cap.isOpened() is False:
+    print("Unable to initialize VideoCapture object. Exiting...")
+    sys.exit()
+
+
+@flask_app.route('/recognition_service', methods=['POST'])
+def webhook_handler():
     # Store JSON Request
     req = request.get_json(silent=True, force=True)
 
@@ -39,53 +45,65 @@ def train_model():
     print("Request:")
     print(json.dumps(req, indent=4))
 
-    # Create Response Dictionary
-    voice = "Hello World Speech"
-    res = {
-        "speech": voice,
-        "displayText": voice,
-        "source": "test"
-    }
+    # Extract parameters and action from request body
+    parameters = req.get("result").get("parameters")
+    action = req.get("result").get("action")
+
+    # Generate response body
+    if action == "add_user" or action == "update_user":
+        res = generate_add_user_response(parameters)
+    elif action == "identify_user":
+        res = generate_identify_user_response()
+    else:
+        res = {}
+
+    res_string = json.dumps(res, indent=4)
 
     # Make dictionary into response object and add headers
-    r = make_response(res)
+    r = make_response(res_string)
     r.headers['Content-Type'] = 'application/json'
 
     # Return response
     return r
 
+
 def get_max_id(obj):
     if len(obj.keys()) == 0:
         return 0    
-    return max([int(x) for x in obj.keys()])
+    return max([int(key) for key in obj.keys()])
 
-def update_db(value, label=None):
+
+def update_db(value, key=None):
     # check existing entry
     for k, v in users.iteritems():
         if v == value:
             return k
-    # insert new entry
-    if label == None:
-        user_id = str(get_max_id(users) + 1)
-    else:
-        user_id = str(label)
-    users[user_id] = value
-    return user_id        
 
-def generate_dataset(capture, path, name, num_samples = 30):
+    # insert new entry
+    if key is None:
+        key = str(get_max_id(users) + 1)
+    users[key] = value
+    return key
+
+
+def generate_dataset(capture, dataset_path, user_name, num_samples=DEFAULT_NUM_SAMPLES_TRAIN, wait_time=500,
+                     display_window=True):
     sample_idx = 0
     samples_captured = 0
 
+    # Create lists to hold all subject faces and labels
     face_list = []
     label_list = []
 
-    user_id = update_db(name)
+    # Get user id if in db, else add user to db
+    user_id = update_db(user_name)
+    user_dataset_path = dataset_path + "/user_" + user_id
 
-    full_user_dir = path + "/user_" + user_id
-    if not os.path.exists(full_user_dir):
-        os.makedirs(full_user_dir)
-        with open(full_user_dir + '/name.txt', 'w') as f:
-            f.write(name)
+    # Create user directory if non-existent
+    if not os.path.exists(user_dataset_path):
+        os.makedirs(user_dataset_path)
+        with open(user_dataset_path + '/user_name.txt', 'w') as f:
+            f.write(user_name)
 
     while True:
         # Obtain next video frame
@@ -97,71 +115,76 @@ def generate_dataset(capture, path, name, num_samples = 30):
 
         # Iterate through faces found
         for (x, y, w, h) in detected_faces:
-            cv2.rectangle(img, (x, y), (x + w, y + h), (255, 0, 0), 2)
-
-            while os.path.exists(full_user_dir + "/sample_" + str(sample_idx) + ".jpg"):
-                sample_idx += 1
-
-            # Save captured face image in the dataset folder
-            resized_img = cv2.resize(img_gray[y:y + h, x:x + w], (200, 200), interpolation=cv2.INTER_AREA)
-            face_list.append(resized_img)
-            label_list.append(int(user_id))
-
-            cv2.imwrite(full_user_dir + "/sample_" + str(sample_idx) + ".jpg", resized_img)
-
             samples_captured += 1
             sample_idx += 1
 
-            # Display captured frame
-            cv2.imshow('frame', img)
+            # Resize image to 200x200
+            resized_img = cv2.resize(img_gray[y:y + h, x:x + w], (200, 200), interpolation=cv2.INTER_AREA)
 
-        # Wait for 1 second
-        if cv2.waitKey(500) & 0xFF == ord('q'):
+            # Save captured face image in the user dataset directory, and append to lists
+            while os.path.exists(user_dataset_path + "/sample_" + str(sample_idx) + ".jpg"):
+                sample_idx += 1
+            cv2.imwrite(user_dataset_path + "/sample_" + str(sample_idx) + ".jpg", resized_img)
+            face_list.append(resized_img)
+            label_list.append(int(user_id))
+
+            # Display captured frame
+            if display_window:
+                cv2.rectangle(img, (x, y), (x + w, y + h), (255, 0, 0), 2)
+                cv2.imshow('frame', img)
+
+        # Wait for 500 milliseconds
+        if cv2.waitKey(wait_time) & 0xFF == ord('q'):
             break
         elif samples_captured >= num_samples:
             break
 
+    cv2.destroyAllWindows()
     return face_list, label_list
 
-def get_faces(path):
+
+def get_faces(dataset_path):
     # Create lists to hold all subject faces and labels
     face_list = []
     label_list = []
 
-    # Iterate through all directories (users) in dataSet folder
-    for user_dir in os.listdir(path):
+    # Iterate through all directories (users) in dataset path
+    for user_dataset_name in os.listdir(dataset_path):
         # Ignore irrelevant directories
-        if not user_dir.startswith("user_"):
+        if not user_dataset_name.startswith("user_"):
             continue
 
-        # Extract user id from directory name
-        label = int(user_dir.replace("user_", ""))
+        # Extract user id and name from directory
+        user_dataset_path = dataset_path + "/" + user_dataset_name
+        user_id = int(user_dataset_name.replace("user_", ""))
+        with open(user_dataset_path + '/user_name.txt', 'r') as f:
+            user_name = f.read()
+
+        # Add user to db
+        update_db(user_name, str(user_id))
 
         # Generate list of image paths
-        full_user_dir = path + "/" + user_dir
-        image_paths = [os.path.join(full_user_dir, f) for f in os.listdir(full_user_dir)]
-
-        with open(full_user_dir + '/name.txt', 'r') as f:
-            name = f.read()
-
-        update_db(name, label)
+        image_paths = [os.path.join(user_dataset_path, f) for f in os.listdir(user_dataset_path)]
 
         # Iterate through images
         for image_path in image_paths:
-            if not image_path.endswith('.jpg'): # skip name file
+            # Skip non-jpg files
+            if not image_path.endswith('.jpg'):
                 continue
 
-            # Read Image
+            # Read Image and append to lists
             img = cv2.imread(image_path)
             img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             face_list.append(img_gray)
-            label_list.append(label)
+            label_list.append(user_id)
 
     return face_list, label_list
 
 
-def predict_user(capture, num_samples = 50):
+def predict_user(capture, num_samples=DEFAULT_NUM_SAMPLES_IDENTIFY, display_window=True):
     samples_captured = 0
+
+    # Use list of length users to count number of detections for each user
     results = [0]*len(users)
 
     while True:
@@ -172,82 +195,121 @@ def predict_user(capture, num_samples = 50):
         img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         detected_faces = face_cascade.detectMultiScale(img_gray, scaleFactor=1.3, minNeighbors=5)
 
+        # Iterate through faces found
         for (x, y, w, h) in detected_faces:
-            cv2.rectangle(img, (x, y), (x + w, y + h), (225, 0, 0), 2)
-            label, confidence = face_recognizer.predict(img_gray[y:y + h, x:x + w])
+            # Predict user_id, set to Unknown if confidence > MAX_CONFIDENCE
+            user_id, confidence = face_recognizer.predict(img_gray[y:y + h, x:x + w])
+            if confidence > MAX_CONFIDENCE:
+                user_id = 0
 
-            if confidence > 60:
-                label = 0
-
-            name = users[str(label)]
-            results[label] += 1
+            user_name = users[str(user_id)]
+            results[user_id] += 1
             samples_captured += 1
 
-            cv2.putText(img, name, (x, y + h), cv2.FONT_HERSHEY_PLAIN, 1.5, (225, 0, 0))
+            # Display captured frame
+            if display_window:
+                cv2.rectangle(img, (x, y), (x + w, y + h), (225, 0, 0), 2)
+                cv2.putText(img, user_name, (x, y + h), cv2.FONT_HERSHEY_DUPLEX, 1.5, (225, 0, 0))
+                cv2.imshow('frame', img)
 
-        cv2.imshow('frame', img)
         if cv2.waitKey(10) & 0xFF == ord('q'):
             break
         elif samples_captured >= num_samples:
             break
 
-    capture.release()
     cv2.destroyAllWindows()
 
+    # Returns user_name with most detections, if equal, user with index is returned
     return users[str(results.index(max(results)))]
 
-if __name__ == '__main__':
-    # TODO create dataSet and model dirs
-    device_id = 0
-    port = 3000
 
-    # create dirs  
-    if not os.path.exists(modelDir):
-        os.makedirs(modelDir)
-    if not os.path.exists(dataSetDir):
-        os.makedirs(dataSetDir)
+def generate_add_user_response(parameters):
+    given_name = parameters.get("given-name")
+    num_samples = parameters.get("num-samples")
+
+    if num_samples == "":
+        num_samples = DEFAULT_NUM_SAMPLES_IDENTIFY
+    else:
+        num_samples = int(num_samples)
+
+    face_list, label_list = generate_dataset(cap, DATASET_DIR, given_name, num_samples)
+    face_recognizer.update(face_list, np.array(label_list))
+    face_recognizer.write(MODEL_PATH)
+    users.sync()
+
+    response_string = given_name + " has been successfully added."
+    res = {
+        "speech": response_string,
+        "displayText": response_string,
+    }
+    return res
+
+
+def generate_identify_user_response():
+    identify_result = predict_user(cap)
+
+    if identify_result == "Unknown":
+        response_string = "Unknown person is at the door."
+    else:
+        response_string = identify_result + " is at the door."
+
+    res = {
+        "speech": response_string,
+        "displayText": response_string,
+    }
+    return res
+
+if __name__ == '__main__':
+    # Create directories
+    if not os.path.exists(MODEL_DIR):
+        os.makedirs(MODEL_DIR)
+    if not os.path.exists(DATASET_DIR):
+        os.makedirs(DATASET_DIR)
 
     # get a db handle
-    users = shelve.open(shelfPath)
-
-    # start video capture
-    print("Starting VideoCapture object on Device %d" % device_id)
-    cap = cv2.VideoCapture(0)
-    if cap.isOpened() is False:
-        print("Unable to initialize VideoCapture object")
+    users = shelve.open(SHELF_PATH)
 
     try:
-        # check model 
-        if os.path.exists(modelPath):
-            face_recognizer.read(modelPath) # use existing db
+        # Check if model exits
+        if os.path.exists(MODEL_PATH):
+            face_recognizer.read(MODEL_PATH)
         else:
-            # reset db
+            # Reset db
             users.clear()
             users['0'] = 'Unknown'
-            faces, labels = get_faces(dataSetDir)
-            if faces == []:
-                new_face_input = raw_input("Would you like to add a new face to the dataset (y/n): ")
-                if new_face_input.lower() == "y":
-                    user_name = raw_input("Enter user name: ")
-                    faces, labels = generate_dataset(cap, dataSetDir, user_name, 50)
 
-                    face_recognizer.train(faces, np.array(labels))
-        
+            # Read existing images from dataset directory
+            faces, labels = get_faces(DATASET_DIR)
+            if len(faces) == 0:
+                print("No faces found in dataset folder.")
+
+            # Train model
+            face_recognizer.train(faces, np.array(labels))
+
+        # Prompt user to add new face to dataset
         new_face_input = raw_input("Would you like to add a new face to the dataset (y/n): ")
         if new_face_input.lower() == "y":
-            user_name = raw_input("Enter user name: ")
-            faces, labels = generate_dataset(cap, dataSetDir, user_name, 50)
+            name = raw_input("Enter user name: ")
+            faces, labels = generate_dataset(cap, DATASET_DIR, name)
             face_recognizer.update(faces, np.array(labels))
 
-        train_input = raw_input("Would you like to rescan the dataSet folder? (y/n): ")
+        # Prompt user to add new face to dataset
+        train_input = raw_input("Would you like to rescan the dataset folder? This will erase current model (y/n): ")
         if train_input.lower() == "y":
-            faces, labels = get_faces(dataSetDir)
-            face_recognizer.update(faces, np.array(labels))
-            
-        face_recognizer.write(modelPath)
-        print(predict_user(cap))
+            # Reset db
+            users.clear()
+            users['0'] = 'Unknown'
 
-    #except Exception as e:
-     #   print(e)
+            faces, labels = get_faces(DATASET_DIR)
+            face_recognizer.train(faces, np.array(labels))
+
+        # Write model to disk, sync db
+        face_recognizer.write(MODEL_PATH)
+        users.sync()
+
+        # Start app
+        print("Starting facial recognition service on " + FLASK_SERVER_HOST + ":" + str(FLASK_SERVER_PORT))
+        flask_app.run(debug=False, port=FLASK_SERVER_PORT, host=FLASK_SERVER_HOST)
+
     finally:
         users.close()

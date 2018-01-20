@@ -156,5 +156,4 @@ fabric.properties
 
 # Custom Files
 model/*
-dataSet/*
-.idea/vcs.xml
+dataset/*
